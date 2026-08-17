@@ -1,0 +1,22 @@
+# @package model
+# DreamerV3 with Balanced-Alternating Minibatch Sampling
+# Alternates between nominal-only and perturbed-only minibatches.
+# This is a stricter version of homogeneous sampling — each batch
+# is guaranteed to be from alternating domains.
+#
+# Ablation for: "Robustness Without Modification" paper
+
+defaults:
+  - size12M
+
+compile: False  # Skip torch.compile for fast experiment iteration
+
+rep_loss: "dreamer"
+
+loss_scales:
+  recon: 1.0
+
+# Domain-aware buffer config (read by train.py from model.buffer)
+buffer:
+  domain_sampling_mode: "balanced_alternating"
+  nominal_prob: 0.7

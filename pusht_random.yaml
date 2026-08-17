@@ -1,0 +1,14 @@
+# Config for HDF5 Push-T dataset (generated via gen_data_v3.py)
+dataset:
+  num_steps: ${eval:'${num_preds} + ${history_size}'}
+  frameskip: 5
+  name: pusht_random_train  # resolves to $STABLEWM_HOME/datasets/pusht_random_train.h5
+  keys_to_load:
+    - pixels
+    - action
+    - proprio
+    - state
+  keys_to_cache:
+    - action
+    - proprio
+    - state

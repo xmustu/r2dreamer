@@ -1,0 +1,21 @@
+# @package model
+# DreamerV3 with Domain-Aware Replay (mixed mode = baseline)
+# Uses standard mixed sampling — identical to DV3 baseline but with
+# domain tracking enabled. Serves as the baseline for homogeneous
+# minibatch comparison.
+#
+# Part of: "Robustness Without Modification" experiment suite
+
+defaults:
+  - size12M
+
+compile: False  # Skip torch.compile for fast experiment iteration
+
+rep_loss: "dreamer"
+
+loss_scales:
+  recon: 1.0
+
+# Domain-aware buffer config (read by train.py from model.buffer)
+buffer:
+  domain_sampling_mode: "mixed"

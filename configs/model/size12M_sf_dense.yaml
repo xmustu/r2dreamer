@@ -1,0 +1,14 @@
+# @package model
+# Sparse Factorized RSSM — λ=0 ablation (dense factorized, no sparsity)
+# Same architecture as SF-RSSM but without L0 sparsity penalty
+# Tests whether sparsity is necessary for mechanism-aligned robustness
+
+defaults:
+  - size12M_sf
+
+rssm:
+  sf_sparse_lambda: 0.0
+  sf_sparse_scale: 0.0
+
+loss_scales:
+  sf_sparse: 0.0

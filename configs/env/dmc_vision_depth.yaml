@@ -1,0 +1,5 @@
+# SPER v2 深度实验专用 env 配置：继承 dmc_vision，开启 MuJoCo 深度渲染
+defaults:
+  - dmc_vision
+
+use_depth_obs: True

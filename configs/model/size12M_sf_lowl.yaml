@@ -1,0 +1,15 @@
+# @package model
+# Sparse Factorized RSSM — reduced λ=0.0001 (100x lower than default)
+# Fixes gate collapse: default λ=0.01 pushes all off-diagonal logits negative,
+# causing hard threshold at eval to zero out all cross-factor edges.
+# λ=0.0001 allows cross-factor dependencies to survive.
+
+defaults:
+  - size12M_sf
+
+rssm:
+  sf_sparse_lambda: 0.0001
+  sf_sparse_scale: 1.0
+
+loss_scales:
+  sf_sparse: 1.0

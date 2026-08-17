@@ -1,0 +1,29 @@
+# 训练日志与产物
+logdir/
+logdir_tt/
+lightning_logs/
+outputs/
+logs/
+sper2_valid/
+
+# 模型权重
+*.pt
+*.pth
+*.ckpt
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 误建的 venv
+ls/
+list/
+info/
+create/
+
+# 其他
+.hydra/
+events.out.tfevents*
+*.log
+nohup.out

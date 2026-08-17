@@ -1,0 +1,10 @@
+# @package model
+# Sparse Factorized RSSM — shared h_t ablation (no factor-specific bottleneck)
+# All factors share the same h_t projection — removes the bottleneck component
+# Tests whether the factor-specific bottleneck is necessary (C3 ablation)
+
+defaults:
+  - size12M_sf
+
+rssm:
+  sf_shared_ht: True

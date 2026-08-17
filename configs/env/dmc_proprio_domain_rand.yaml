@@ -1,0 +1,19 @@
+# @package env
+# DMC proprioceptive with Domain Randomization
+# Uses RandomizedDynamicsWrapper for mixed-dynamics training.
+# nominal_prob controls the fraction of nominal (unperturbed) episodes.
+#
+# For ratio sweep experiments, change nominal_prob:
+#   0.0 → all perturbed    (0/100)
+#   0.3 → 30/70            (30% nominal)
+#   0.5 → 50/50
+#   0.7 → 70/30            (NoDistill default)
+#   0.9 → 90/10
+#   1.0 → all nominal       (clean baseline, standard DV3)
+
+defaults:
+  - dmc_proprio
+
+# Domain randomization settings
+use_domain_rand: true
+nominal_prob: 0.7          # 70% nominal, 30% perturbed (NoDistill default)

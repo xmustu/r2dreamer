@@ -1,0 +1,17 @@
+# @package model
+# Ensemble RSSM configuration
+# Inherits from size12M, replaces single prior head with K=3 ensemble
+
+defaults:
+  - size12M
+
+compile: False  # Skip torch.compile for faster startup
+
+rep_loss: "dreamer"  # Use decoder reconstruction (NOT Barlow Twins)
+
+rssm:
+  ensemble_enabled: True
+  ensemble_k: 3
+  ensemble_lambda_max: 0.01
+  ensemble_ramp_end: 0.3
+  ensemble_bootstrap_rate: 0.7

@@ -1,0 +1,14 @@
+# @package model
+# DreamerV3 + RAD — data augmentation baseline
+# Uses DreamerPro's random translation augmentation for visual robustness
+# Control condition: tests whether augmentation alone helps with OOD shifts
+
+defaults:
+  - size12M
+
+rep_loss: "dreamerpro"
+
+loss_scales:
+  swav: 1.0
+  temp: 1.0
+  norm: 1.0

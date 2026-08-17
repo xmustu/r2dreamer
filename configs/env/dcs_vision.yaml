@@ -1,0 +1,22 @@
+task: 'dcs_cheetah_run_clean'
+steps: 5.01e5
+env_num: 16
+eval_episode_num: 10
+action_repeat: 2
+train_ratio: 512
+time_limit: 1000
+
+seed: ${seed}
+device: ${device}
+
+size: [64, 64]
+encoder:
+  mlp_keys: '$^'
+  cnn_keys: 'image'
+decoder:
+  mlp_keys: '$^'
+  cnn_keys: 'image'
+
+# DCS-specific settings
+dcs_background_path: null  # Set via env var DAVIS_PATH or override here
+dcs_distraction_types: ['background']

@@ -1,0 +1,11 @@
+# @package model
+# Two-Timescale RSSM v2 — scalar heuristic gate (1 parameter)
+
+defaults:
+  - size12M
+
+rep_loss: "r2dreamer"
+
+rssm:
+  tt_v2_enabled: True
+  tt_global_ratio: 0.25

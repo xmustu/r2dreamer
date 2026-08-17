@@ -1,0 +1,16 @@
+# @package model
+# Two-Timescale RSSM configuration
+# Splits RSSM deterministic state into h_global (slow) + h_local (fast)
+
+defaults:
+  - size12M
+
+rep_loss: "r2dreamer"
+
+rssm:
+  tt_enabled: True
+  tt_global_ratio: 0.25
+  tt_enable_heads: False   # Disabled for core experiments (probes add params)
+
+loss_scales:
+  tt_cont: 0.01             # Continuation prediction head (uses is_terminal)

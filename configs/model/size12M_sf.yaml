@@ -1,0 +1,22 @@
+# @package model
+# Sparse Factorized RSSM configuration
+# Inherits from size12M, adds SF-RSSM specific settings
+
+defaults:
+  - size12M
+
+rep_loss: "r2dreamer"  # Use R2-Dreamer's Barlow Twins objective
+
+rssm:
+  sf_enabled: True
+  sf_num_factors: 8
+  sf_sparse_lambda: 0.0001
+  sf_gate_center_lambda: 1.0
+  sf_gate_temperature: 0.5
+  sf_gate_hidden: 64
+  sf_sparse_scale: 0.1
+  sf_center_scale: 1.0
+
+loss_scales:
+  sf_sparse: 0.1
+  sf_center: 1.0

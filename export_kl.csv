@@ -1,0 +1,19 @@
+model,task,seed,step,dyn_loss,rep_loss
+BL,cartpole swingup,42,49000,1.100,1.100
+TT,cartpole swingup,42,49000,1.200,1.200
+BL,cartpole swingup,123,99000,1.300,1.300
+TT,cartpole swingup,123,96003,1.200,1.200
+BL,cartpole swingup,456,99000,1.100,1.100
+TT,cartpole swingup,456,99000,1.100,1.100
+BL,cheetah run,42,99000,1.100,1.100
+TT,cheetah run,42,99000,1.100,1.100
+BL,cheetah run,123,99000,1.200,1.200
+TT,cheetah run,123,99000,1.100,1.100
+BL,cheetah run,456,99000,1.100,1.100
+TT,cheetah run,456,99000,1.200,1.200
+BL,walker walk,42,308003,2.300,2.300
+TT,walker walk,42,309000,2.900,2.900
+BL,walker walk,123,308003,2.700,2.700
+TT,walker walk,123,309000,2.300,2.300
+BL,walker walk,456,309000,2.300,2.300
+TT,walker walk,456,309000,1.900,1.900

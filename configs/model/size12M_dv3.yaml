@@ -1,0 +1,11 @@
+# @package model
+# DreamerV3 baseline — standard RSSM with decoder reconstruction
+# Uses the original DreamerV3 world model (no structural priors)
+
+defaults:
+  - size12M
+
+rep_loss: "dreamer"  # Standard DreamerV3 reconstruction objective
+
+loss_scales:
+  recon: 1.0

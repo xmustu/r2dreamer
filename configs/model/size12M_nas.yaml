@@ -1,0 +1,21 @@
+# @package model
+# Nominal-Anchored Dynamics Randomization (NaS)
+#
+# Extends standard DreamerV3 with:
+#   1. Mixed replay: 70% nominal + 30% randomized dynamics
+#   2. Distillation loss from frozen teacher on nominal batches
+#
+# Usage:
+#   python train.py model=size12M_nas env.randomize_dynamics_prob=0.7 \
+#       teacher_checkpoint=logdir/v2/size12M_dv3_cheetah_run_s42/latest.pt
+
+defaults:
+  - size12M
+
+rep_loss: "dreamer"  # Standard decoder reconstruction
+compile: False  # Skip torch.compile for faster startup
+
+loss_scales:
+  recon: 1.0
+  distill_policy: 0.0    # 关掉策略蒸馏（与学生策略冲突）
+  distill_value: 0.05     # 保留值函数蒸馏（降低权重，仅稳定价值）

@@ -1,0 +1,21 @@
+# ERAR experiment config — extends lewm.yaml with ERAR hyperparameters
+defaults:
+  - lewm
+  - _self_
+
+# --- ERAR Configuration ---
+erar:
+  enabled: true
+  ema_decay: 0.99
+  update_every: 1000    # steps between coverage recomputation
+  tau: 0.5              # PR/d threshold for coverage adequacy
+  alpha: 0.1            # uniform mix coefficient for sampling weights
+  noise_scale: 0.1      # magnitude of latent augmentation noise
+  aug_prob: 0.05        # probability of augmenting a batch element
+
+# --- Random Mix (for ablation experiments) ---
+# 1.0 = full expert dataset, 0.0 = no data (use with caution)
+random_mix: 1.0
+
+# --- Override output model name ---
+output_model_name: lewm_erar

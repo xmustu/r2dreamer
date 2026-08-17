@@ -1,0 +1,22 @@
+# @package model
+# DreamerV3 with Homogeneous-Minibatch Mixed Replay
+# Each world-model minibatch is forced to be >80% from ONE dynamics domain.
+# Hypothesis: domain-homogeneous batches reduce destructive gradient averaging
+# across incompatible transition laws.
+#
+# Core method for: "Robustness Without Modification" paper (Idea 4 / Idea 1)
+
+defaults:
+  - size12M
+
+compile: False  # Skip torch.compile for fast experiment iteration
+
+rep_loss: "dreamer"
+
+loss_scales:
+  recon: 1.0
+
+# Domain-aware buffer config (read by train.py from model.buffer)
+buffer:
+  domain_sampling_mode: "homogeneous"
+  nominal_prob: 0.7                         # Match env config

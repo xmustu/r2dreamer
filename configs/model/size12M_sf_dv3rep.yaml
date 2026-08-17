@@ -1,0 +1,16 @@
+# @package model
+# Sparse Factorized RSSM with DreamerV3 decoder reconstruction (NOT Barlow Twins)
+# Matches DV3 baseline exactly in representation objective.
+#
+# Key difference from size12M_sf.yaml: rep_loss = "dreamer" instead of "r2dreamer"
+# This eliminates the Barlow Twins conflict with factorized prior.
+
+defaults:
+  - size12M_sf
+
+rep_loss: "dreamer"  # Match DV3: decoder-based reconstruction
+
+loss_scales:
+  recon: 1.0
+  sf_sparse: 0.1
+  sf_center: 1.0
