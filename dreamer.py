@@ -98,10 +98,17 @@ class Dreamer(nn.Module):
         if self.sper_v2_enabled:
             self._sper_v2_lambda_motion = float(getattr(config, "sper_v2_lambda_motion", 0.01))
             self._sper_v2_lambda_depth = float(getattr(config, "sper_v2_lambda_depth", 0.01))
+            self._sper_v2_lambda_contact = float(getattr(config, "sper_v2_lambda_contact", 0.01))
+            _contact_dim = int(shapes["contact"][0]) if "contact" in shapes else int(
+                getattr(config, "sper_v2_contact_dim", 8)
+            )
             self._sper_v2 = sper_v2.SPERv2(
                 feat_size=self.rssm.feat_size,
                 hidden_size=int(getattr(config, "sper_v2_hidden", 64)),
                 detach_feat=bool(getattr(config, "sper_v2_detach_feat", False)),
+                contact_dim=_contact_dim,
+                contact_enabled=bool(getattr(config, "sper_v2_contact_enabled", True)),
+                sgfm_enabled=bool(getattr(config, "sper_v2_sgfm_enabled", True)),
             )
 
         config.actor.shape = (act_space.n,) if hasattr(act_space, "n") else tuple(map(int, act_space.shape))
@@ -143,6 +150,7 @@ class Dreamer(nn.Module):
             # 注意：与 sper 共用 loss key（两者不同时启用，见集成文档）
             self._loss_scales.setdefault("sper_motion", 1.0)
             self._loss_scales.setdefault("sper_depth", 1.0)
+            self._loss_scales.setdefault("sper_contact", 1.0)
         self._log_grads = bool(config.log_grads)
 
         # Teacher loading for Nominal-Anchored Dynamics Randomization
@@ -390,7 +398,7 @@ class Dreamer(nn.Module):
         stoch, deter, _ = self._frozen_rssm.obs_step(prev_stoch, prev_deter, prev_action, embed, obs["is_first"])
         # (B, F)
         feat = self._frozen_rssm.get_feat(stoch, deter)
-        action_dist = self._frozen_actor(feat)
+        action_dist = self._frozen_actor(self._fuse_feat(feat))
         # (B, A)
         action = action_dist.mode if eval else action_dist.rsample()
         return action, TensorDict(
@@ -647,6 +655,7 @@ class Dreamer(nn.Module):
                 feat, data,
                 lambda_motion=self._sper_v2_lambda_motion,
                 lambda_depth=self._sper_v2_lambda_depth,
+                lambda_contact=self._sper_v2_lambda_contact,
             )
             losses.update(sper_v2_losses)
 
@@ -702,7 +711,7 @@ class Dreamer(nn.Module):
             adv = adv - penalty
             metrics["ensemble_disagreement_imagination"] = disc_flat.mean().item()
 
-        policy = self.actor(imag_feat)
+        policy = self.actor(self._fuse_feat(imag_feat))
         # (B*T, T_imag-1, 1)
         logpi = policy.log_prob(imag_action)[:, :-1].unsqueeze(-1)
         entropy = policy.entropy()[:, :-1].unsqueeze(-1)
@@ -807,7 +816,7 @@ class Dreamer(nn.Module):
         stoch, deter = start
         for _ in range(imag_horizon):
             feat = self._frozen_rssm.get_feat(stoch, deter)
-            action = self._frozen_actor(feat).rsample()
+            action = self._frozen_actor(self._fuse_feat(feat)).rsample()
             feats.append(feat)
             actions.append(action)
             if self.ensemble_enabled:
@@ -838,6 +847,12 @@ class Dreamer(nn.Module):
         for i in reversed(range(live.shape[1])):
             out.append(interm[:, i] + live[:, i] * cont[:, i] * out[-1])
         return torch.stack(list(reversed(out))[:-1], 1)
+
+    def _fuse_feat(self, feat):
+        """SGFM 决策阶段融合：actor 输入 = feat + 门控融合残差。"""
+        if self.sper_v2_enabled and self._sper_v2.sgfm is not None:
+            return feat + self._sper_v2.fused_residual(feat)
+        return feat
 
     @torch.no_grad()
     def preprocess(self, data):

@@ -384,6 +384,22 @@ def load_agent(checkpoint_path, config_path, device="cuda:0"):
     if hasattr(config.model, "compile"):
         config.model.compile = False
 
+    # Override ALL device fields in config — otherwise RSSM/encoder create
+    # tensors on the training GPU (e.g. cuda:2) while the agent is moved to
+    # the eval device → "Expected all tensors to be on the same device".
+    def _override_devices(cfg):
+        if isinstance(cfg, omegaconf.DictConfig):
+            for k, v in cfg.items():
+                if k == "device" and isinstance(v, str):
+                    cfg[k] = device
+                else:
+                    _override_devices(v)
+        elif isinstance(cfg, omegaconf.ListConfig):
+            for v in cfg:
+                _override_devices(v)
+
+    _override_devices(config)
+
     agent = Dreamer(config.model, obs_space, act_space).to(torch.device(device))
     agent.load_state_dict(state_dict)
     agent.eval()

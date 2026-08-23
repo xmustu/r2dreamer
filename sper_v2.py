@@ -1,25 +1,19 @@
 """
-SPER v2: Spatial Perception Enhancement for RSSM — ORIGINAL DESIGN (rev2, post-Codex-review)
+SPER v2: Spatial Perception Enhancement for RSSM — ORIGINAL DESIGN (rev3)
 
-与当前生产版 sper.py（M2 验证用 MSE + embedding 派生目标）不同，本模块实现
-FINAL_PROPOSAL.md 的原设计：
-
+三模态空间感知 + 结构化门控融合（SGFM）：
 - MotionHead  → 二值运动掩码（帧间差分阈值化）→ BCEWithLogitsLoss
 - DepthHead   → 鲁棒归一化深度图              → L1 Loss
+- ContactHead → 二值接触掩码（MuJoCo data.contact 真值）→ BCEWithLogitsLoss
+- SGFM        → 各头 hidden 特征独立编码，决策阶段门控融合，
+                 残差注入 actor 输入（编码纯净，决策耦合）
 
-Codex 评审修复记录（2026-08-15）：
-- [CRITICAL→FIXED] depth_obs._find_dmc 遍历逻辑
-- [MAJOR→FIXED] 深度目标 NaN/Inf 与远平面值破坏归一化 → nan_to_num + clamp + 分位数归一化
-- [MAJOR→FIXED] 末帧零目标污染 BCE → 掩掉最后一帧
-- [MAJOR→FIXED] detach_feat 默认值改为 False（与计划的"正则化模式"一致）
-- [MAJOR→FIXED] obs dict 原地修改 → dict(obs) 拷贝
-- [MINOR→FIXED] 阈值化移到池化之前（max-pool 占用率，小运动目标不丢失）
-- [MINOR→FIXED] BCE 类别不平衡 → 批次估计 pos_weight（可配置，clamp 上限）
-- [MINOR→FIXED] 深度输出 sigmoid 约束到 [0,1]
-- [INFO→FIXED] 结构改为计划所述 2 层 MLP（hidden=64，~170K 参数/头，计划粗估 50K）
-- [INFO→FIXED] 集成断言（形状/设备/dtype 检查）
+rev3 变更（2026-08-18）：
+- 新增 ContactHead（nbody=8 二值接触目标，data["contact"]）
+- 新增 SGFM 类（structured gating fusion mechanism，C4 消融用）
+- SpatialHead 暴露 hidden() 供 SGFM 取各模态编码特征
 
-独立新模块，与 sper.py 并存；当前 M2 验证不受影响。集成步骤见 SPER_V2_INTEGRATION.md。
+独立新模块，与 sper.py 并存。集成见 SPER_V2_INTEGRATION.md。
 """
 
 import torch
@@ -36,10 +30,7 @@ def _downsample_image(x, spatial_size):
 
 
 def _downsample_occupancy(mask, spatial_size):
-    """Downsample a binary (B, T, H, W) mask to (B, T, S, S) via max pooling.
-
-    使用 max-pool：单元格内任意像素有运动 → 单元格记为运动（小运动目标不丢失）。
-    """
+    """Downsample a binary (B, T, H, W) mask to (B, T, S, S) via max pooling."""
     B, T, H, W = mask.shape
     return F.adaptive_max_pool2d(mask.reshape(B * T, 1, H, W), (spatial_size, spatial_size)).reshape(
         B, T, spatial_size, spatial_size
@@ -47,82 +38,138 @@ def _downsample_occupancy(mask, spatial_size):
 
 
 def compute_motion_mask_target(images, spatial_size=8, threshold=0.02):
-    """Compute binary motion mask target from consecutive RGB frames.
-
-    Args:
-        images: (B, T, H, W, C) float [0,1] — 注意：_cal_grad 中的 image 已经过
-            Dreamer.preprocess（uint8 / 255.0），非原始 uint8
-        spatial_size: 目标空间分辨率
-        threshold: 亮度差阈值（[0,1] 尺度，0.02 ≈ 5/255）。像素级差分（池化之前）阈值化
-
-    Returns:
-        target: (B, T, S, S) float, {0,1} 二值掩码。最后一帧（无后继帧）目标为 0，
-            由调用方在损失中掩掉。
-    """
-    images = images.float()  # 必须在减法前 cast，避免 uint8 回绕
+    """Binary motion mask from consecutive RGB frames (preprocessed [0,1])."""
+    images = images.float()
     B, T = images.shape[:2]
-    # 像素级差分 → 阈值化（池化之前）→ (B, T-1, H, W)
     diff = (images[:, 1:] - images[:, :-1]).abs().mean(dim=-1)
     mask = (diff > threshold).float()
-    # 最后一帧无后继 → 目标 0
     padded = torch.zeros(B, T, mask.shape[-2], mask.shape[-1], device=images.device, dtype=mask.dtype)
     padded[:, :-1] = mask
-    return _downsample_occupancy(padded, spatial_size)  # (B, T, S, S)
+    return _downsample_occupancy(padded, spatial_size)
 
 
 def compute_depth_target(depth, spatial_size=8, max_depth=10.0, eps=1e-6):
-    """Robust per-frame depth normalization and downsample to S×S.
-
-    Args:
-        depth: (B, T, H, W) float — MuJoCo depth render（米），envs/depth_obs.py 提供
-        spatial_size: 目标空间分辨率
-        max_depth: 深度上限（米）。MuJoCo 远平面/天空可产生巨大值，先 clamp
-
-    Returns:
-        target: (B, T, S, S) float，每帧 2%/98% 分位数归一化到 [0,1]
-    """
+    """Robust per-frame depth normalization → S×S [0,1]."""
     depth = depth.float()
     depth = torch.nan_to_num(depth, nan=0.0, posinf=max_depth, neginf=0.0)
     depth = depth.clamp(0.0, max_depth)
     B, T = depth.shape[:2]
-    # 分位数归一化：远平面少量极大值不会压扁物体几何
     flat = depth.reshape(B, T, -1)
-    q_lo = torch.quantile(flat, 0.02, dim=-1, keepdim=True)  # (B, T, 1)
+    q_lo = torch.quantile(flat, 0.02, dim=-1, keepdim=True)
     q_hi = torch.quantile(flat, 0.98, dim=-1, keepdim=True)
     normalized = ((depth - q_lo.unsqueeze(-1)) / (q_hi.unsqueeze(-1) - q_lo.unsqueeze(-1) + eps)).clamp(0.0, 1.0)
     return _downsample_image(normalized, spatial_size)
 
 
-class SpatialHead(nn.Module):
-    """Flat latent → S×S spatial map。2 层 MLP（计划结构）：Linear→LN→SiLU→Linear。
+def compute_contact_target(contact):
+    """Contact target: (B, T, nbody) binary — 由 env wrapper 提供（MuJoCo data.contact 真值）."""
+    return contact.float()
 
-    motion 头输出 logits（无激活）；depth 头输出经 sigmoid（目标 [0,1]）。
-    """
+
+class SpatialHead(nn.Module):
+    """Flat latent → S×S spatial map。2 层 MLP + LN，暴露 hidden 供 SGFM 融合。"""
 
     def __init__(self, feat_size, hidden_size, spatial_size, output_activation=None):
         super().__init__()
         self.spatial_size = spatial_size
         self.output_activation = output_activation
-        self.net = nn.Sequential(
+        self.first = nn.Sequential(
             nn.Linear(feat_size, hidden_size, bias=True),
             nn.LayerNorm(hidden_size),
             nn.SiLU(),
-            nn.Linear(hidden_size, spatial_size * spatial_size, bias=True),
         )
+        self.last = nn.Linear(hidden_size, spatial_size * spatial_size, bias=True)
+
+    def _reshape_in(self, feat):
+        was2d = feat.dim() == 2
+        return (feat.unsqueeze(1) if was2d else feat), was2d
+
+    def hidden(self, feat):
+        """模态编码特征（决策阶段融合用）：(B, T, hidden) 或 (B, hidden)"""
+        f, was2d = self._reshape_in(feat)
+        B, T, F = f.shape
+        h = self.first(f.reshape(B * T, F)).reshape(B, T, -1)
+        return h[:, 0] if was2d else h
 
     def forward(self, feat):
-        B, T, F = feat.shape
-        out = self.net(feat.reshape(B * T, F))
+        f, was2d = self._reshape_in(feat)
+        B, T, F = f.shape
+        h = self.first(f.reshape(B * T, F))
+        out = self.last(h)
         if self.output_activation is not None:
             out = self.output_activation(out)
-        return out.reshape(B, T, self.spatial_size, self.spatial_size)
+        out = out.reshape(B, T, self.spatial_size, self.spatial_size)
+        return out[:, 0] if was2d else out
+
+
+class FlatHead(nn.Module):
+    """Flat latent → nbody 接触 logits。2 层 MLP + LN，暴露 hidden。"""
+
+    def __init__(self, feat_size, hidden_size, out_dim):
+        super().__init__()
+        self.out_dim = out_dim
+        self.first = nn.Sequential(
+            nn.Linear(feat_size, hidden_size, bias=True),
+            nn.LayerNorm(hidden_size),
+            nn.SiLU(),
+        )
+        self.last = nn.Linear(hidden_size, out_dim, bias=True)
+
+    def hidden(self, feat):
+        was2d = feat.dim() == 2
+        f = feat.unsqueeze(1) if was2d else feat
+        B, T, F = f.shape
+        h = self.first(f.reshape(B * T, F)).reshape(B, T, -1)
+        return h[:, 0] if was2d else h
+
+    def forward(self, feat):
+        was2d = feat.dim() == 2
+        f = feat.unsqueeze(1) if was2d else feat
+        B, T, F = f.shape
+        out = self.last(self.first(f.reshape(B * T, F))).reshape(B, T, self.out_dim)
+        return out[:, 0] if was2d else out
+
+
+class SGFM(nn.Module):
+    """Structured Gating Fusion Mechanism — 结构化门控融合（C4 消融）。
+
+    各模态 head 的 hidden 特征在编码阶段保持独立（各自经独立 MLP 提取）；
+    SGFM 在决策阶段学习门控权重 α ∈ R³，加权融合后经输出投影生成与
+    feat 同维的残差，注入 actor 输入：actor_input = feat + sgfm(feat)。
+    """
+
+    def __init__(self, feat_size, hidden_size, n_modalities=3, fusion_hidden=128):
+        super().__init__()
+        self.n_modalities = n_modalities
+        # 门控网络：从各模态激活摘要（(B,T,n_mod)）学模态权重
+        self.gate = nn.Sequential(
+            nn.Linear(n_modalities, fusion_hidden, bias=True),
+            nn.SiLU(),
+            nn.Linear(fusion_hidden, n_modalities, bias=True),
+        )
+        # 融合特征投影回 feat_size（残差注入）
+        self.out = nn.Linear(hidden_size, feat_size, bias=True)
+
+    def forward(self, modal_hiddens):
+        """modal_hiddens: list of (B, T, hidden) 或 (B, hidden) 各模态编码特征"""
+        was2d = modal_hiddens[0].dim() == 2
+        if was2d:
+            modal_hiddens = [m.unsqueeze(1) for m in modal_hiddens]
+        B, T, H = modal_hiddens[0].shape
+        stacked = torch.stack(modal_hiddens, dim=-1)  # (B, T, hidden, n_mod)
+        # 门控输入：各模态特征的均值池化（维度无关的摘要）
+        feat_summary = stacked.mean(dim=2)  # (B, T, n_mod)
+        logits = self.gate(feat_summary.detach())  # (B, T, n_mod)
+        alpha = torch.softmax(logits, dim=-1)  # (B, T, n_mod)
+        fused = (stacked * alpha.unsqueeze(2)).sum(dim=-1)  # (B, T, hidden)
+        out = self.out(fused)  # (B, T, feat_size)
+        return out[:, 0] if was2d else out
 
 
 class SPERv2(nn.Module):
-    """原设计：运动掩码 (BCE) + 深度 (L1) 空间感知预测。
+    """原设计：运动掩码 (BCE) + 深度 (L1) + 接触掩码 (BCE) + SGFM 融合。
 
-    挂载点与 sper.SPER 相同：feat = RSSM get_feat(post_stoch, post_deter)。
-    detach_feat=False（默认，正则化模式）时梯度流入 RSSM 隐状态。
+    detach_feat=False（默认）时梯度流入 RSSM 隐状态（正则化模式）。
     目标（targets）始终 detached。
     """
 
@@ -135,6 +182,9 @@ class SPERv2(nn.Module):
         motion_threshold=0.02,
         max_depth=10.0,
         motion_pos_weight=None,
+        contact_dim=8,
+        contact_enabled=True,
+        sgfm_enabled=True,
     ):
         super().__init__()
         self.detach_feat = detach_feat
@@ -142,28 +192,46 @@ class SPERv2(nn.Module):
         self.motion_threshold = motion_threshold
         self.max_depth = max_depth
         self.motion_pos_weight = motion_pos_weight
+        self.contact_dim = contact_dim
+        self.contact_enabled = contact_enabled
+        self.sgfm_enabled = sgfm_enabled
         self._warned_no_depth = False
+        self._warned_no_contact = False
 
-        self.motion_head = SpatialHead(feat_size, hidden_size, spatial_size)  # logits
+        self.motion_head = SpatialHead(feat_size, hidden_size, spatial_size)
         self.depth_head = SpatialHead(feat_size, hidden_size, spatial_size, output_activation=torch.sigmoid)
+        self.contact_head = FlatHead(feat_size, hidden_size, contact_dim)
+
+        # SGFM：决策阶段融合（C4 消融）。3 模态 = 运动/深度/接触
+        self.sgfm = SGFM(feat_size, hidden_size, n_modalities=3) if sgfm_enabled else None
 
     def forward(self, feat):
         if self.detach_feat:
             feat = feat.detach()
-        return {"motion_logits": self.motion_head(feat), "depth_pred": self.depth_head(feat)}
+        return {
+            "motion_logits": self.motion_head(feat),
+            "depth_pred": self.depth_head(feat),
+            "contact_logits": self.contact_head(feat),
+        }
 
-    def compute_losses(self, feat, data, lambda_motion=0.01, lambda_depth=0.01):
-        """原设计损失：motion BCE（掩末帧）+ depth L1。
+    def fused_residual(self, feat):
+        """SGFM 残差：actor_input = feat + fused_residual(feat)。推断/训练共用。"""
+        if self.sgfm is None:
+            return None
+        hiddens = [
+            self.motion_head.hidden(feat),
+            self.depth_head.hidden(feat),
+            self.contact_head.hidden(feat),
+        ]
+        return self.sgfm(hiddens)
+
+    def compute_losses(self, feat, data, lambda_motion=0.01, lambda_depth=0.01, lambda_contact=0.01):
+        """损失：motion BCE + depth L1 + contact BCE。
 
         Args:
             feat: (B, T, F) RSSM latent
-            data: 批次数据（TensorDict），需含 "image"；含 "depth" 时启用深度损失
-            lambda_motion / lambda_depth: 损失权重
-
-        Returns:
-            dict: {"sper_motion": BCE loss, "sper_depth": L1 loss（若 depth 可用）}
+            data: 批次数据，需含 "image"；可选 "depth" / "contact"
         """
-        # --- 集成断言（Codex 建议 #17）：批量级，开销可忽略 ---
         B, T, _F = feat.shape
         img = data["image"]
         assert img.ndim == 5 and img.shape[-1] in (1, 3), f"image shape {img.shape}"
@@ -174,12 +242,11 @@ class SPERv2(nn.Module):
         losses = {}
         preds = self.forward(feat)
 
-        # --- Motion: BCE with binary mask target（末帧掩掉）---
+        # --- Motion: BCE（掩末帧）---
         with torch.no_grad():
             motion_target = compute_motion_mask_target(
                 img, self.spatial_size, self.motion_threshold
-            )  # (B, T, S, S)，最后一帧全 0
-        # 类别不平衡：批次估计 pos_weight（clamp 上限防爆）
+            )
         if self.motion_pos_weight is None:
             pos = motion_target[:, :-1].sum()
             neg = motion_target[:, :-1].numel() - pos
@@ -190,18 +257,31 @@ class SPERv2(nn.Module):
             preds["motion_logits"][:, :-1], motion_target[:, :-1], pos_weight=pos_weight
         )
 
-        # --- Depth: L1 vs robust-normalized depth（需 data["depth"]）---
+        # --- Depth: L1 ---
         if lambda_depth > 0 and "depth" in data:
             assert data["depth"].shape[:2] == (B, T) and data["depth"].device == feat.device
             with torch.no_grad():
                 depth_target = compute_depth_target(data["depth"], self.spatial_size, self.max_depth)
             losses["sper_depth"] = lambda_depth * F.l1_loss(
-                preds["depth_pred"], depth_target  # 深度逐帧独立，末帧有效，不掩
+                preds["depth_pred"], depth_target  # 深度逐帧独立，末帧有效
             )
         elif lambda_depth > 0 and not self._warned_no_depth:
-            # 集成阶段：depth 观测尚未接入时跳过深度损失并提示一次
             self._warned_no_depth = True
-            print("[SPERv2] data has no 'depth' key — depth loss skipped. "
-                  "Integrate envs/depth_obs.py to enable it.")
+            print("[SPERv2] data has no 'depth' key — depth loss skipped.")
+
+        # --- Contact: BCE（稀疏，pos_weight）---
+        if lambda_contact > 0 and self.contact_enabled and "contact" in data:
+            assert data["contact"].shape[:2] == (B, T) and data["contact"].device == feat.device
+            with torch.no_grad():
+                contact_target = compute_contact_target(data["contact"])
+            pos = contact_target.sum()
+            neg = contact_target.numel() - pos
+            cw = (neg / (pos + 1e-6)).clamp(min=1.0, max=20.0)
+            losses["sper_contact"] = lambda_contact * F.binary_cross_entropy_with_logits(
+                preds["contact_logits"], contact_target, pos_weight=cw
+            )
+        elif lambda_contact > 0 and self.contact_enabled and not self._warned_no_contact:
+            self._warned_no_contact = True
+            print("[SPERv2] data has no 'contact' key — contact loss skipped.")
 
         return losses

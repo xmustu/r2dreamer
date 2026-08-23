@@ -94,6 +94,41 @@ def main():
     assert "sper_depth" not in losses and "sper_motion" in losses
     print("[OK] missing depth: depth loss skipped, motion loss present")
 
+    # --- Contact head: BCE on binary contact target ---
+    model = sper_v2.SPERv2(feat_size, hidden, detach_feat=False, spatial_size=8, contact_dim=8)
+    contact = (torch.rand(B, T, 8) > 0.7).float()  # 稀疏二值接触
+    losses = model.compute_losses(torch.randn(B, T, feat_size),
+                                  {"image": images, "depth": depth, "contact": contact},
+                                  lambda_motion=1.0, lambda_depth=1.0, lambda_contact=1.0)
+    assert "sper_contact" in losses and torch.isfinite(losses["sper_contact"])
+    print(f"[OK] contact head: BCE loss {losses['sper_contact'].item():.4f}")
+
+    # --- SGFM: 残差注入 + 门控权重归一 ---
+    model = sper_v2.SPERv2(feat_size, hidden, detach_feat=True, spatial_size=8, sgfm_enabled=True)
+    feat = torch.randn(B, T, feat_size)
+    residual = model.fused_residual(feat)
+    assert residual is not None and residual.shape == (B, T, feat_size)
+    assert torch.isfinite(residual).all()
+    actor_in = feat + residual
+    assert torch.isfinite(actor_in).all()
+    print(f"[OK] SGFM: residual shape {tuple(residual.shape)}, |r|={residual.abs().mean().item():.4f}")
+
+    # --- SGFM 关闭时 fused_residual 返回 None（推断路径安全）---
+    model = sper_v2.SPERv2(feat_size, hidden, detach_feat=True, sgfm_enabled=False)
+    assert model.fused_residual(torch.randn(B, T, feat_size)) is None
+    print("[OK] SGFM disabled: fused_residual returns None")
+
+    # --- 2D feat（推断路径 act()）：heads + SGFM 均需兼容 (B, F) ---
+    model = sper_v2.SPERv2(feat_size, hidden, detach_feat=True, spatial_size=8)
+    feat2d = torch.randn(B, feat_size)
+    preds2d = model.forward(feat2d)
+    assert preds2d["motion_logits"].shape == (B, 8, 8)
+    assert preds2d["depth_pred"].shape == (B, 8, 8)
+    assert preds2d["contact_logits"].shape == (B, 8)
+    res2d = model.fused_residual(feat2d)
+    assert res2d.shape == (B, feat_size), f"residual shape {res2d.shape}"
+    print("[OK] 2D feat path (act inference): all heads + SGFM work")
+
     # --- 集成断言：坏输入应报错 ---
     model = sper_v2.SPERv2(feat_size, hidden, detach_feat=True)
     try:

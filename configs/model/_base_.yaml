@@ -60,12 +60,16 @@ sper_detach_feat: False
 sper_lambda_motion: 0.01
 sper_lambda_depth: 0.01
 
-# SPER v2: 原设计（真实目标 — BCE 运动掩码 + L1 深度）
+# SPER v2: 原设计（真实目标 — BCE 运动掩码 + L1 深度 + BCE 接触掩码 + SGFM）
 sper_v2_enabled: False
 sper_v2_hidden: 64
 sper_v2_detach_feat: False
 sper_v2_lambda_motion: 0.01
 sper_v2_lambda_depth: 0.01
+sper_v2_lambda_contact: 0.01
+sper_v2_contact_dim: 8
+sper_v2_contact_enabled: True
+sper_v2_sgfm_enabled: True
 
 rssm:
   stoch: 32
