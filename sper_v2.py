@@ -200,19 +200,23 @@ class SPERv2(nn.Module):
 
         self.motion_head = SpatialHead(feat_size, hidden_size, spatial_size)
         self.depth_head = SpatialHead(feat_size, hidden_size, spatial_size, output_activation=torch.sigmoid)
-        self.contact_head = FlatHead(feat_size, hidden_size, contact_dim)
+        # noContact 消融：contact_enabled=False 时不构建接触头，SGFM 退化为 2 模态
+        self.contact_head = FlatHead(feat_size, hidden_size, contact_dim) if contact_enabled else None
 
-        # SGFM：决策阶段融合（C4 消融）。3 模态 = 运动/深度/接触
-        self.sgfm = SGFM(feat_size, hidden_size, n_modalities=3) if sgfm_enabled else None
+        # SGFM：决策阶段融合（C4 消融）。模态数 = 运动/深度(/接触)
+        n_modalities = 3 if contact_enabled else 2
+        self.sgfm = SGFM(feat_size, hidden_size, n_modalities=n_modalities) if sgfm_enabled else None
 
     def forward(self, feat):
         if self.detach_feat:
             feat = feat.detach()
-        return {
+        preds = {
             "motion_logits": self.motion_head(feat),
             "depth_pred": self.depth_head(feat),
-            "contact_logits": self.contact_head(feat),
         }
+        if self.contact_head is not None:
+            preds["contact_logits"] = self.contact_head(feat)
+        return preds
 
     def fused_residual(self, feat):
         """SGFM 残差：actor_input = feat + fused_residual(feat)。推断/训练共用。"""
@@ -221,8 +225,9 @@ class SPERv2(nn.Module):
         hiddens = [
             self.motion_head.hidden(feat),
             self.depth_head.hidden(feat),
-            self.contact_head.hidden(feat),
         ]
+        if self.contact_head is not None:
+            hiddens.append(self.contact_head.hidden(feat))
         return self.sgfm(hiddens)
 
     def compute_losses(self, feat, data, lambda_motion=0.01, lambda_depth=0.01, lambda_contact=0.01):

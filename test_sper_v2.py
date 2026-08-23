@@ -139,7 +139,23 @@ def main():
         assert "image shape" in str(e), f"unexpected assert msg: {e}"
     print("[OK] integration asserts catch malformed inputs")
 
-    print("\nAll SPER v2 checks passed (rev2).")
+    # --- noContact 消融路径：contact_enabled=False 干净移除接触头 + SGFM 2 模态 ---
+    model = sper_v2.SPERv2(feat_size, hidden, contact_enabled=False, sgfm_enabled=True)
+    preds = model(torch.randn(B, T, feat_size))
+    assert set(preds.keys()) == {"motion_logits", "depth_pred"}, (
+        f"noContact preds keys {preds.keys()} — contact head must be fully removed")
+    res = model.fused_residual(torch.randn(B, T, feat_size))
+    assert res.shape == (B, T, feat_size), f"2-modal SGFM residual shape {res.shape}"
+    assert torch.isfinite(res).all()
+    res2d = model.fused_residual(torch.randn(B, feat_size))
+    assert res2d.shape == (B, feat_size)
+    data_nc = {"image": images}
+    losses_nc = model.compute_losses(torch.randn(B, T, feat_size), data_nc,
+                                     lambda_motion=0.01, lambda_depth=0.01, lambda_contact=0.01)
+    assert "sper_contact" not in losses_nc, "contact loss must be absent when contact disabled"
+    print("[OK] noContact ablation path: 2-modal SGFM, contact fully removed")
+
+    print("\nAll SPER v2 checks passed (rev3).")
     return 0
 
 
