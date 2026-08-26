@@ -61,7 +61,7 @@ def main():
         model = sper_v2.SPERv2(feat_size, hidden, detach_feat=detach, spatial_size=8)
         feat = torch.randn(B, T, feat_size, requires_grad=True)
         data = {"image": images, "depth": depth}
-        losses = model.compute_losses(feat, data, lambda_motion=1.0, lambda_depth=1.0)
+        losses = model.compute_losses(feat, data)
         total = sum(losses.values())
         assert torch.isfinite(total), f"loss NaN with detach={detach}"
         total.backward()
@@ -75,7 +75,7 @@ def main():
     # --- 末帧掩码：motion-only 时 feat 梯度在 t=T-1 应为零 ---
     model = sper_v2.SPERv2(feat_size, hidden, detach_feat=False, spatial_size=8)
     feat = torch.randn(B, T, feat_size, requires_grad=True)
-    losses = model.compute_losses(feat, {"image": images}, lambda_motion=1.0, lambda_depth=0.0)
+    losses = model.compute_losses(feat, {"image": images})
     losses["sper_motion"].backward()
     last_frame_grad = feat.grad[:, -1].abs().sum().item()
     assert last_frame_grad == 0.0, f"last-frame grad must be 0 (masked), got {last_frame_grad}"
@@ -89,8 +89,7 @@ def main():
 
     # --- 无 depth 数据时跳过深度损失 ---
     model = sper_v2.SPERv2(feat_size, hidden, detach_feat=True)
-    losses = model.compute_losses(torch.randn(B, T, feat_size), {"image": images},
-                                  lambda_motion=1.0, lambda_depth=1.0)
+    losses = model.compute_losses(torch.randn(B, T, feat_size), {"image": images})
     assert "sper_depth" not in losses and "sper_motion" in losses
     print("[OK] missing depth: depth loss skipped, motion loss present")
 
@@ -98,8 +97,7 @@ def main():
     model = sper_v2.SPERv2(feat_size, hidden, detach_feat=False, spatial_size=8, contact_dim=8)
     contact = (torch.rand(B, T, 8) > 0.7).float()  # 稀疏二值接触
     losses = model.compute_losses(torch.randn(B, T, feat_size),
-                                  {"image": images, "depth": depth, "contact": contact},
-                                  lambda_motion=1.0, lambda_depth=1.0, lambda_contact=1.0)
+                                  {"image": images, "depth": depth, "contact": contact})
     assert "sper_contact" in losses and torch.isfinite(losses["sper_contact"])
     print(f"[OK] contact head: BCE loss {losses['sper_contact'].item():.4f}")
 
@@ -132,8 +130,7 @@ def main():
     # --- 集成断言：坏输入应报错 ---
     model = sper_v2.SPERv2(feat_size, hidden, detach_feat=True)
     try:
-        model.compute_losses(torch.randn(B, T, feat_size), {"image": images[:, :, :, :, 0]},
-                             lambda_motion=1.0, lambda_depth=0.0)
+        model.compute_losses(torch.randn(B, T, feat_size), {"image": images[:, :, :, :, 0]})
         raise AssertionError("expected assertion failure for 4-D image")
     except AssertionError as e:
         assert "image shape" in str(e), f"unexpected assert msg: {e}"
@@ -150,8 +147,7 @@ def main():
     res2d = model.fused_residual(torch.randn(B, feat_size))
     assert res2d.shape == (B, feat_size)
     data_nc = {"image": images}
-    losses_nc = model.compute_losses(torch.randn(B, T, feat_size), data_nc,
-                                     lambda_motion=0.01, lambda_depth=0.01, lambda_contact=0.01)
+    losses_nc = model.compute_losses(torch.randn(B, T, feat_size), data_nc)
     assert "sper_contact" not in losses_nc, "contact loss must be absent when contact disabled"
     print("[OK] noContact ablation path: 2-modal SGFM, contact fully removed")
 

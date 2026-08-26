@@ -93,12 +93,13 @@ class Dreamer(nn.Module):
                 detach_feat=bool(getattr(config, "sper_detach_feat", False)),
             )
 
-        # SPER v2: 原设计（真实目标 — BCE 运动掩码 + L1 深度）
+        # SPER v2: 原设计（真实目标 — BCE 运动掩码 + L1 深度 + BCE 接触 + SGFM）。
+        # 损失权重统一由 loss_scales 缩放（2026-08-26 修复双重缩放；
+        # 旧 config 键 sper_v2_lambda_* 保留但不再使用）。
+        # fuse_actor=False → 推理阶段三个预测头完全移除（零推理开销）。
         self.sper_v2_enabled = bool(getattr(config, "sper_v2_enabled", False))
         if self.sper_v2_enabled:
-            self._sper_v2_lambda_motion = float(getattr(config, "sper_v2_lambda_motion", 0.01))
-            self._sper_v2_lambda_depth = float(getattr(config, "sper_v2_lambda_depth", 0.01))
-            self._sper_v2_lambda_contact = float(getattr(config, "sper_v2_lambda_contact", 0.01))
+            self._fuse_actor = bool(getattr(config, "sper_v2_fuse_actor", True))
             _contact_dim = int(shapes["contact"][0]) if "contact" in shapes else int(
                 getattr(config, "sper_v2_contact_dim", 8)
             )
@@ -148,9 +149,10 @@ class Dreamer(nn.Module):
             self._loss_scales.setdefault("sper_depth", 1.0)
         if self.sper_v2_enabled:
             # 注意：与 sper 共用 loss key（两者不同时启用，见集成文档）
-            self._loss_scales.setdefault("sper_motion", 1.0)
-            self._loss_scales.setdefault("sper_depth", 1.0)
-            self._loss_scales.setdefault("sper_contact", 1.0)
+            # 默认 0.01：与 config loss_scales 一致（三模态统一有效权重）
+            self._loss_scales.setdefault("sper_motion", 0.01)
+            self._loss_scales.setdefault("sper_depth", 0.01)
+            self._loss_scales.setdefault("sper_contact", 0.01)
         self._log_grads = bool(config.log_grads)
 
         # Teacher loading for Nominal-Anchored Dynamics Randomization
@@ -649,14 +651,10 @@ class Dreamer(nn.Module):
             )
             losses.update(sper_losses)
 
-        # SPER v2: 原设计空间感知损失（BCE 运动掩码 + L1 深度，真实目标）
+        # SPER v2: 空间感知损失（BCE 运动掩码 + L1 深度 + BCE 接触，真实目标）。
+        # 原始损失在此收集，权重统一由 loss_scales 缩放（sper_motion/depth/contact=0.01）
         if self.sper_v2_enabled:
-            sper_v2_losses = self._sper_v2.compute_losses(
-                feat, data,
-                lambda_motion=self._sper_v2_lambda_motion,
-                lambda_depth=self._sper_v2_lambda_depth,
-                lambda_contact=self._sper_v2_lambda_contact,
-            )
+            sper_v2_losses = self._sper_v2.compute_losses(feat, data)
             losses.update(sper_v2_losses)
 
         # reward and continue
@@ -849,8 +847,12 @@ class Dreamer(nn.Module):
         return torch.stack(list(reversed(out))[:-1], 1)
 
     def _fuse_feat(self, feat):
-        """SGFM 决策阶段融合：actor 输入 = feat + 门控融合残差。"""
-        if self.sper_v2_enabled and self._sper_v2.sgfm is not None:
+        """SGFM 决策阶段融合：actor 输入 = feat + 门控融合残差。
+
+        fuse_actor=False 时推理/训练调用点返回纯 feat——三个预测头在推理阶段
+        完全移除（零推理开销），SGFM 仅作为训练期信号存在。
+        """
+        if self.sper_v2_enabled and self._fuse_actor and self._sper_v2.sgfm is not None:
             return feat + self._sper_v2.fused_residual(feat)
         return feat
 

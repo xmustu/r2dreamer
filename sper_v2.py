@@ -230,8 +230,13 @@ class SPERv2(nn.Module):
             hiddens.append(self.contact_head.hidden(feat))
         return self.sgfm(hiddens)
 
-    def compute_losses(self, feat, data, lambda_motion=0.01, lambda_depth=0.01, lambda_contact=0.01):
-        """损失：motion BCE + depth L1 + contact BCE。
+    def compute_losses(self, feat, data):
+        """损失：motion BCE + depth L1 + contact BCE（**原始损失，未缩放**）。
+
+        权重统一由 Dreamer 的 `loss_scales`（sper_motion/sper_depth/sper_contact
+        各 0.01）在 total_loss 处一次性缩放——2026-08-26 修复双重缩放问题
+        （此前模块内乘 λ=0.01 又被 loss_scales 乘 0.01，motion/depth 有效权重
+        仅 1e-4，与 contact 的 0.01 不一致）。
 
         Args:
             feat: (B, T, F) RSSM latent
@@ -258,34 +263,34 @@ class SPERv2(nn.Module):
             pos_weight = (neg / (pos + 1e-6)).clamp(min=1.0, max=20.0)
         else:
             pos_weight = self.motion_pos_weight
-        losses["sper_motion"] = lambda_motion * F.binary_cross_entropy_with_logits(
+        losses["sper_motion"] = F.binary_cross_entropy_with_logits(
             preds["motion_logits"][:, :-1], motion_target[:, :-1], pos_weight=pos_weight
         )
 
         # --- Depth: L1 ---
-        if lambda_depth > 0 and "depth" in data:
+        if "depth" in data:
             assert data["depth"].shape[:2] == (B, T) and data["depth"].device == feat.device
             with torch.no_grad():
                 depth_target = compute_depth_target(data["depth"], self.spatial_size, self.max_depth)
-            losses["sper_depth"] = lambda_depth * F.l1_loss(
+            losses["sper_depth"] = F.l1_loss(
                 preds["depth_pred"], depth_target  # 深度逐帧独立，末帧有效
             )
-        elif lambda_depth > 0 and not self._warned_no_depth:
+        elif not self._warned_no_depth:
             self._warned_no_depth = True
             print("[SPERv2] data has no 'depth' key — depth loss skipped.")
 
         # --- Contact: BCE（稀疏，pos_weight）---
-        if lambda_contact > 0 and self.contact_enabled and "contact" in data:
+        if self.contact_enabled and "contact" in data:
             assert data["contact"].shape[:2] == (B, T) and data["contact"].device == feat.device
             with torch.no_grad():
                 contact_target = compute_contact_target(data["contact"])
             pos = contact_target.sum()
             neg = contact_target.numel() - pos
             cw = (neg / (pos + 1e-6)).clamp(min=1.0, max=20.0)
-            losses["sper_contact"] = lambda_contact * F.binary_cross_entropy_with_logits(
+            losses["sper_contact"] = F.binary_cross_entropy_with_logits(
                 preds["contact_logits"], contact_target, pos_weight=cw
             )
-        elif lambda_contact > 0 and self.contact_enabled and not self._warned_no_contact:
+        elif self.contact_enabled and not self._warned_no_contact:
             self._warned_no_contact = True
             print("[SPERv2] data has no 'contact' key — contact loss skipped.")
 

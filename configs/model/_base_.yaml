@@ -34,6 +34,7 @@ loss_scales:
   norm: 1.0
   sper_motion: 0.01
   sper_depth: 0.01
+  sper_contact: 0.01
 
 r2dreamer:
   lambd: 5e-4
@@ -64,12 +65,16 @@ sper_lambda_depth: 0.01
 sper_v2_enabled: False
 sper_v2_hidden: 64
 sper_v2_detach_feat: False
+# 以下 lambda 键已废弃（2026-08-26）：损失权重统一由上方 loss_scales 缩放，
+# 三模态有效权重一致为 0.01；保留键位仅为兼容旧启动命令。
 sper_v2_lambda_motion: 0.01
 sper_v2_lambda_depth: 0.01
 sper_v2_lambda_contact: 0.01
 sper_v2_contact_dim: 8
 sper_v2_contact_enabled: True
 sper_v2_sgfm_enabled: True
+# False → 推理阶段移除三个预测头（actor 输入 = 纯 feat，零推理开销）
+sper_v2_fuse_actor: True
 
 rssm:
   stoch: 32
